@@ -1,0 +1,415 @@
+---
+title: "Analysis of Supplier Selection data"
+output: 
+  html_document
+---
+##sections include
+### 1) read data; 2) clean data and some EDA(exploratory data analysis); 3) organize data into one table; 4) more EDA between variables; 5) try different models; 6) step-wise to remove variables and run ANOVA on the variables; 7) re-run the model with finalized variables.
+
+
+
+```{r message=FALSE, warning= FALSE}
+
+
+## 1) read data into R
+
+
+###load packages
+library(caret)
+library(ROCR)
+library(XLConnect)
+library(readxl)
+library(stringr)
+library(purrr)
+library(tidyr)
+library(lubridate)
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(e1071)
+library(rpart)
+library(leaps)
+library(ISLR)
+library(knitr)
+library(ggvis)
+library(gdata)
+library(bestglm)
+library(pscl)
+library(penalizedSVM)
+
+```
+
+
+```{r}
+
+###  read all the supplier attribute into R and assign them with variables
+
+setwd("C:/Users/f03771b/Documents/MICYUHUILIU/sishi/H1B docs/Master program/isem/Master's thesis/supplier selections")
+
+delivery_ps_PN <- read_excel("supplier attribute data.xlsx", sheet = 1)
+
+delivery_ps_qty <- read_excel("supplier attribute data.xlsx", sheet = 2)
+
+output_strategic <- read_excel("supplier attribute data.xlsx", sheet = 3)
+
+financial <- read_excel("supplier attribute data.xlsx", sheet = 4)
+
+quality <- read_excel("supplier attribute data.xlsx", sheet = 5)
+
+trust <- read_excel("supplier attribute data.xlsx", sheet = 6)
+
+competiv <- read_excel("supplier attribute data.xlsx", sheet = 7)
+
+```
+
+
+```{r}
+##2)  clean the data loaded and exploratory data analysis
+
+## clean DELIVERY DATA: use gather function to gather the variables related to date to a single column
+delivery_ps_PN <- delivery_ps_PN %>% gather( key = "week_from_102016", value = "ps_pn", -supplier, na.rm = TRUE)
+
+delivery_ps_qty <- delivery_ps_qty %>% gather( key = "week_from_102016", value = "ps_qty", -supplier, na.rm = TRUE)
+
+###putting the past_due data together in one table
+delivery_data <- merge(delivery_ps_PN, delivery_ps_qty, by = c("supplier", "week_from_102016"))
+head(delivery_data)
+delivery_data_week <- delivery_data %>% group_by(week_from_102016) %>% summarise(ps_pn_week = sum(ps_pn), ps_qty_week =sum(ps_qty))
+delivery_data_week$week_from_102016 <- as.numeric(delivery_data_week$week_from_102016)
+ggplot(delivery_data_week, aes(x= cut(week_from_102016, breaks = 4), y = ps_qty_week)) + geom_boxplot() + xlab("weeks from 10022016 winter, spring, summer, winter") + ylab("past due quantity during that period")
+ggplot(delivery_data_week, aes(x = cut(week_from_102016, breaks = 4), y = ps_pn_week)) + geom_boxplot() + xlab("weeks from 10022016 winter, spring, summer, winter") + ylab("past due PN count during that period")
+
+delivery_data <- left_join(delivery_data, financial, by = "supplier") %>% mutate(ps_qty_norm = round(ps_qty / (turnover_ratio * 1000),digits = 2),  ps_pn_norm = round(ps_pn/ (turnover_ratio * 10), digits = 2))
+delivery_data <- delivery_data[ , c(1,2,8,9)]
+
+delivery_data <- delivery_data %>% mutate_at(c('ps_qty_norm', 'ps_pn_norm'), funs(scale(.) %>% as.vector))### now normalize ps_qty_norm and ps_pn_norm so that their mean = 0 and standard deviation = 1
+
+
+head(delivery_data)
+
+### derived new metrics : average past due part number count and average past due part number quantity.### note because regression models did not show any variables to be significant in the form of numeric values and the numeric values on all explanatory variables are not working for the classification decision tree. I am deriving new categorical variables based on those numeric variables
+summary_delivery_data <- delivery_data %>% 
+  group_by(supplier) %>% 
+    summarise(mean_ps_qty_norm = mean(ps_qty_norm),mean_ps_pn_norm = mean(ps_pn_norm)) 
+cor(summary_delivery_data[ , -1]) # the correlation  between these two past due statistics is not strong
+
+head(summary_delivery_data)
+
+##clean "competitive" data:
+
+
+competiv <- separate(competiv, eff_date, into = c("year", "month", "day"), sep = "/")  %>% dplyr::select(c('supplier','year','month','day','turnover_usd'))
+### separate the date into year, month and day so we can see the yearly growth for suppliers based on new turnover added per year
+### turnover with NAs can just be removed because if the turnover for that PN business is empty, it means that business does not actually generate any dollar amount now.
+missing_turnover <- competiv %>% filter(is.na(turnover_usd)) %>% group_by(supplier) %>% tally() ### filtering the NAs
+sum(missing_turnover$n) ###total 106 new business added does not have a turnover dollar amount. it seems that supplier 1, 2, 3 have more missing turnover that the other suppliers.
+
+pct_missing_per_supplier <- group_by(competiv, supplier) %>% summarise(total_count= n()) %>% left_join(missing_turnover, by = 'supplier') %>% mutate(pct_missing = n / total_count)
+### because the missing data is 10 % or under the data avaialble for the supplier, it should be ok as the missing data does not seeem to be supplier related. For the project, we will use the competive (new business added ) data with missing data removed.
+
+
+competiv_nona <- dplyr::select(competiv, supplier, year, turnover_usd) %>% filter(!is.na (turnover_usd))
+
+competiv_by_year <- competiv_nona %>% group_by(supplier, year) %>% summarise(total_added_turnover_year = sum(turnover_usd)/1000)
+### plot ??after removing the NAs, create another column within the competitive datatable called "total_added_turnover" that uses the dollar turnover added per supplier from 2014 to 2017. 
+ggplot(competiv_by_year, aes(year, total_added_turnover_year)) + geom_boxplot() + xlab(" Year the new business was addded") + ylab("total_amount of turnover added that year(USD)")+ ggtitle("total added turnover by year for all suppliers")
+
+##put competitive info(info regarding the new business added) into normalized against supplier's total turnover in USD. I did not normalize it to 0 mean and 1 sd because I think it is meaningful to show that the 0 means there was no new business added. %>% mutate_at('total_added_turnover_n',  funs(scale(.) %>% as.vector)) %>%
+
+competiv_summary <- competiv_nona %>% group_by(supplier) %>% summarise(total_added_turnover = sum(turnover_usd)) %>% left_join(financial, by = "supplier") %>% mutate(total_added_turnover_n = total_added_turnover/(turnover*1000000)) %>% dplyr::select(supplier, total_added_turnover_n)
+
+competiv_nona %>% group_by(supplier) %>% summarise(tat_psupplier = sum(turnover_usd)) %>% ggplot(aes(factor(supplier), tat_psupplier)) + geom_point() + xlab ("supplier") + ylab("total added turnover per supplier") + ggtitle("point plot for total turnover per supplier")
+
+ggplot(competiv_summary, aes(factor(supplier), total_added_turnover_n)) + geom_point() + xlab("supplier") + ylab("total added turnover normalized by its turnover") + ggtitle("point plot for total added normlized turnover per supplier")
+
+### it seems that supplier 7 has had most business added in dollar amount and also in relation to its turnover.
+
+ggplot(competiv_nona, aes(factor(supplier), turnover_usd)) + geom_boxplot() + xlab("supplier") + ylab("turnover for each new business added") + ggtitle(" turnover for each new business added for all 38 suppliers")
+### it seems that there is one new business added to supplier 7 that adds way more turnover than any other business added.
+
+## clean trust data: reorganize trust like how I reorgnized delivery data. 1) convert 1-7 to 7-1 for question 10 because it is asked with opposite tone compared to the rest of the questions. 2) I will change Q1- Q11 column into value in a variable called question. 
+
+Q10 <- c(1:7)
+new <- c(7:1)
+look <- cbind(Q10, new) %>% as.data.frame()
+Q10_n <- look$new[match(unlist(trust$Q10), look$Q10)]
+
+trust <- cbind(trust, Q10_n) %>% subset(select=-c(Participant, Q10)) %>% gather(question, rating, -supplier, na.rm = TRUE) %>% group_by(supplier)
+
+ggplot(trust, aes(factor(question), rating)) + geom_boxplot() + xlab("Question Number") + ylab("rating for the question") + ggtitle(" rating for the each across all suppliers")
+
+
+
+### no significant outliers are seeing in the boxplot, therefore, I will use mean of the rating to represent the trust rating. we can also see it from the close correlation of mean and medium
+head(trust)
+summary(trust$rating)
+trust_summary <- trust %>%summarise(avg_trust_rating = mean(rating), median_trust_rating = median(rating), min_trust_rating = min(rating), max_trust_rating = max(rating))
+ggplot(trust,aes(factor(supplier), rating)) + geom_boxplot()
+
+head(trust_summary)
+cor(trust_summary[,-1])
+summary(trust_summary[,-1])
+pairs(trust_summary[, -1])
+trust_summary <- dplyr::select(trust_summary,c(supplier, avg_trust_rating))
+## cleann financial data: financial data has company turnover, turnover ratio in relation to the total of all 38 suppliers, and credit score. over 30 % of the suppliers' credit scores are missing. in the sourcing process, it typically is mandatory for buyers to obtain teh latest financial credit score of the supplier before adding a great amount of business to the supplier. therefore, it might make more sense to capture the missing of this feature as a logical value. 
+
+
+financial$credit_score <- str_replace(financial$credit_score,"^[0-9]","1")
+
+financial$credit_score <- str_replace(financial$credit_score,"^[a-zA-Z]*$","0") %>% factor(levels = c("0","1"))
+```
+
+```{r}
+
+##  3) join all the data to tables and remove unecessary variables 
+
+
+
+##join all the tables together
+
+
+supplier_data <- list(financial, quality, summary_delivery_data,  trust_summary, competiv_summary, output_strategic) %>% reduce(left_join, by = "supplier")
+
+
+str(supplier_data)
+
+
+###eliminating cergain variables such as turnover, PIQ, PPM NC, credit score. Taking out turnover because turnover ratio represents 
+###the normalized factor of turnover. PIQ and PPM are actual submetrics of total quality score and having the total quaity
+### score should make more sense in terms of representing the quality data. Also credit scores are removed because
+### over 50% of the data are missing.
+
+supplier_data <- supplier_data %>%dplyr::select(- c(1, 2, 6, 7)) %>% dplyr::select(strategic, 1:7)
+
+str(supplier_data)
+### enable and add on other variables that are converted from numeric to categorical:turnover_ratio_f (factor), quality_score_ f (factor) for final quality score,  total_added_turnover_f:trust_rating_f (factor), npsqty_f for final delivery rating after converting the mean of normalized past due quantity into factors (mean_ps_qty_norm).
+supplier_data <- supplier_data %>% mutate(turnover_ratio_f = ifelse( turnover_ratio < mean(turnover_ratio), "low", "high")) 
+
+supplier_data <- supplier_data %>% mutate(quality_score_f = ifelse( quality_score < mean(quality_score), "low", "high")) 
+
+supplier_data <- supplier_data%>% mutate(total_added_turnover_f = ifelse(total_added_turnover_n < mean(total_added_turnover_n), "low", "high"))
+
+supplier_data <- supplier_data %>% mutate(trust_rating_f = ifelse(avg_trust_rating < mean(avg_trust_rating), "low","high")) 
+
+supplier_data <- supplier_data %>% mutate (npsqty_f = ifelse (mean_ps_qty_norm < mean(mean_ps_qty_norm), "good", "bad")) %>% mutate(npspn_f = ifelse(mean_ps_pn_norm < mean(mean_ps_pn_norm), "good", "bad"))
+
+
+supplier_data$quality_score_f <- factor(supplier_data$quality_score_f, levels = c("low", "high"))
+supplier_data$turnover_ratio_f <- factor(supplier_data$turnover_ratio_f, levels = c("low", "high"))
+supplier_data$total_added_turnover_f <- factor(supplier_data$total_added_turnover_f, levels = c("low", "high"))
+supplier_data$npsqty_f<- factor(supplier_data$npsqty_f, levels = c("good","bad"))
+supplier_data$npspn_f<- factor(supplier_data$npspn_f, levels = c("good","bad"))
+
+supplier_data$trust_rating_f <- factor(supplier_data$trust_rating_f, levels = c("low", "high"))
+
+supplier_data <- supplier_data %>% mutate_at(c('turnover_ratio', 'quality_score', 'avg_trust_rating'), funs(scale(.) %>% as.vector))
+
+
+str(supplier_data)
+### adding two other versions of supplier data: 1) one with only the numeric version variables; 2) one with only the categorical variables
+
+supplier_data_n <- dplyr::select(supplier_data, c(1:8))  #one with only the numeric version
+supplier_data_f <- dplyr::select(supplier_data, c(1,3,9:14))   #supplier data with only categorical version of the variables
+```
+## 4) do some more exploratory analysis with reduced data in one table.I want to create a plot of the relationships within all of the variables and faceted by strategic.
+```{r fig.width = 6, fig.height=4, echo = FALSE}
+
+
+### plot every single variables in supplier data
+
+par(mfrow=c(2,3))
+for (i in seq_along(supplier_data_n)){
+  a <- ggplot(supplier_data_n, aes(supplier_data_n[1])) + geom_histogram() + labs( x = paste("variable", colnames(supplier_data_n[i])))
+  print(a)
+}
+
+for (i in seq_along(supplier_data_f)){
+  b <- ggplot(supplier_data_f, aes(supplier_data_f[1])) + geom_bar() + labs( x = paste("variable", colnames(supplier_data_f[i])))
+  print(b)
+}
+
+
+par(mfrow=c(2,3))
+ggplot(supplier_data_f, aes(x = credit_score, fill = factor(strategic))) + geom_bar(position = "dodge")
+ggplot(supplier_data_f, aes(x = turnover_ratio_f, fill = factor(strategic))) + geom_bar(position = "dodge")
+ggplot(supplier_data_f, aes(x = quality_score_f, fill = factor(strategic))) + geom_bar(position = "dodge")
+ggplot(supplier_data_f, aes(x = total_added_turnover_f, fill = factor(strategic))) + geom_bar(position = "dodge")
+ggplot(supplier_data_f, aes(x = trust_rating_f, fill = factor(strategic))) + geom_bar(position = "dodge")
+ggplot(supplier_data_f, aes(x = npsqty_f, fill = factor(strategic))) + geom_bar(position = "dodge")
+
+
+### histogram plot of the variables in supplier data numeric version against output variable
+# understanding how the relationship of individual variables is with output variable strategic
+
+
+supplier_data_n_cs <- supplier_data_n[-3] ###plotting density plot with the numeric version of the variables. taking out credit score for the plotting as it is a factor.
+for (i in (2:length(supplier_data_n_cs))){
+  par(mfrow=c(2,3))
+  b <- ggplot(supplier_data_n_cs, aes(x = supplier_data_n_cs[i], fill = factor(strategic))) +
+geom_density(aes(fill = factor(strategic), bins = 10)) + ggtitle(paste( "Relationship of supplier with variable", colnames(supplier_data_n_cs[i]))) + labs( x = paste("variable", colnames(supplier_data_n_cs[i]))) +scale_colour_grey(start = 0, end = .9) + theme_bw()
+print(b)
+}
+```
+```{r fig.width = 20, fig.height=15, echo = TRUE}
+###understand teh correlation among the numeric variables
+variables_n <- supplier_data_n_cs[-1]
+cor(variables_n)
+pairs(variables_n)
+
+
+
+###plotting the correlation and p value for the correlation
+
+panel.cor <- function(x, y, digits = 2, cex.cor, ...)
+{
+  usr <- par("usr"); on.exit(par(usr))
+  par(usr = c(0, 1, 0, 1))
+  # correlation coefficient
+  r <- cor(x, y)
+  txt <- format(c(r, 0.123456789), digits = digits)[1]
+  txt <- paste("r= ", txt, sep = "")
+  text(0.5, 0.6, txt)
+
+  # p-value calculation
+  p <- cor.test(x, y)$p.value
+  txt2 <- format(c(p, 0.123456789), digits = digits)[1]
+  txt2 <- paste("p= ", txt2, sep = "")
+  if(p<0.01) txt2 <- paste("p= ", "<0.01", sep = "")
+  text(0.5, 0.4, txt2)
+}
+
+pairs(variables_n, upper.panel = panel.cor)
+
+
+
+
+
+
+
+```
+
+
+
+```{r warning = FALSE, message=FALSE}
+
+
+## 5) study statistical models : try applying logistics regression first.
+
+
+summary(supplier_data)
+smp_size <- floor(0.75 * nrow(supplier_data))
+
+## set the seed to make the partition reproductible
+set.seed(123)
+train_ind <- sample(seq_len(nrow(supplier_data)), size = smp_size)
+train_corr <- variables_n[train_ind, ]
+test_corr <- variables_n[-train_ind, ]
+panel.cor <- function(x, y, digits = 2, cex.cor, ...)
+{
+  usr <- par("usr"); on.exit(par(usr))
+  par(usr = c(0, 1, 0, 1))
+  # correlation coefficient
+  r <- cor(x, y)
+  txt <- format(c(r, 0.123456789), digits = digits)[1]
+  txt <- paste("r= ", txt, sep = "")
+  text(0.5, 0.6, txt)
+
+  # p-value calculation
+  p <- cor.test(x, y)$p.value
+  txt2 <- format(c(p, 0.123456789), digits = digits)[1]
+  txt2 <- paste("p= ", txt2, sep = "")
+  if(p<0.01) txt2 <- paste("p= ", "<0.01", sep = "")
+  text(0.5, 0.4, txt2)
+}
+
+pairs(train_corr, upper.panel = panel.cor)
+
+
+
+
+###run logistic regression with all variables 
+
+model_2 <- glm(strategic ~ turnover_ratio + quality_score + total_added_turnover_n + turnover_ratio_f + quality_score_f,family=binomial(link='logit'),data=train)
+print(summary(model_2))
+print(anova(model_2))
+
+
+
+
+
+#### best logistic regression for all supplier _data using AIC score.
+bestglm_aic <- function(df) {
+  df <- within(df,{
+    y <- strategic
+    strategic <- NULL})
+  train <- df[train_ind, ]
+  test <- df[-train_ind, ]
+  supplier_data.for.best.logistic <- as.data.frame(train)
+  res.best.logistic <-  bestglm(Xy = supplier_data.for.best.logistic,
+                                family = binomial,
+                                IC = "AIC",
+                                method = "exhaustive")
+  print(res.best.logistic$BestModels)
+  (best_logit <- res.best.logistic$BestModel)
+  paste("following is the summary of model with the best subset of variables")
+  print(summary(best_logit))
+  paste("following is the ANOVA analysis of the best subset of the variables")
+  print(anova(best_logit))
+  fitted.results <- predict(best_logit,newdata=test[ ,-ncol(test)],type='response')
+  fitted.results <- ifelse(fitted.results > 0.5,1,0)
+  paste("following is the misclassification error")
+  misClasificError <- mean(fitted.results != test$y)
+  print(paste('Accuracy',1-misClasificError))
+  (paste("following is the confusion matrix"))
+  print(confusionMatrix(data=fitted.results, reference=test$y))
+  # ROC and AUC
+  (paste("following is the ROC and AUC score"))
+  (p <- predict(best_logit, newdata=test[ ,-ncol(test)], type="response"))
+  pr <- prediction(p, test$y)
+  # TPR = sensitivity, FPR=specificity
+  prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+  (print(plot(prf)))
+  auc <- performance(pr, measure = "auc")
+  (auc <- auc@y.values[[1]])
+}
+
+bestglm_aic(supplier_data)
+bestglm_aic(supplier_data_f)
+bestglm_aic(supplier_data_n)
+
+
+
+
+
+### It is not possible to use cross validation to choose the best subset of variables becuse the independent variables include credit_score and it is a categorical variable. it is likely that hte training smaple may not contain all legvels. and in this case,we can not predict the response in the validation sample. 
+            
+test1 <- subset(supplier_data, select = c(mean_ps_pn_norm, avg_trust_rating, strategic))
+bestglm_aic(test1)
+
+
+```
+
+
+```{r fig.width = 6, fig.height=4, echo = FALSE}
+
+model_turnover_ratio <- glm(formula = strategic ~ turnover_ratio, family = binomial, data = supplier_data_n)
+summary(model_turnover_ratio)
+range(supplier_data_n$turnover_ratio)
+x_turnover_ratio <- seq(-1, 3, 0.01)
+y_turnover_ratio <- predict(model_turnover_ratio, list(turnover_ratio= x_turnover_ratio), type= "response")
+plot(supplier_data_n$turnover_ratio, supplier_data_n$strategic, pch = 16, xlab = "turnover_ratio", ylab = "strategic")
+lines(x_turnover_ratio, y_turnover_ratio )
+
+
+
+#### glm with al variables of supplier data
+logit_all <- glm(formula = strategic ~ ., family = binomial, data = supplier_data_n)
+summary(logit_all)
+anova(logit_all)
+
+
+
+
+
+```
+
