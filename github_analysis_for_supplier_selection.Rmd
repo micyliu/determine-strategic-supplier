@@ -211,10 +211,10 @@ str(supplier_data)
 supplier_data_n <- dplyr::select(supplier_data, c(1:8))  #one with only the numeric version
 supplier_data_f <- dplyr::select(supplier_data, c(1,3,9:14))   #supplier data with only categorical version of the variables
 ```
-## 4) do some more exploratory analysis with reduced data in one table.I want to create a plot of the relationships within all of the variables and faceted by strategic.
+
 ```{r fig.width = 6, fig.height=4, echo = FALSE}
 
-
+## 4) do some more exploratory analysis with reduced data in one table.I want to create a plot of the relationships within all of the variables and faceted by strategic.
 ### plot every single variables in supplier data
 
 par(mfrow=c(2,3))
