@@ -1,4 +1,4 @@
-# small-projects
+# Determing whether a supplier is strategic
   The purpose of this repo is to document my learning by working on small projects. 
 ### 1) Determining strategic supplier project:
 ##### Project intro:
