@@ -3,18 +3,14 @@
 output: 
   html_document
 ---
-  ##sections include
-  ### 1) read data; 2) clean data and some EDA(exploratory data analysis); 3) organize data into one table; 4) more EDA between variables; 5) try different models; 6) step-wise to remove variables and run ANOVA on the variables; 7) re-run the model with finalized variables.
-  
-  
-  
+
+## 1) read data into R
+ 
+### load packages  
   ```{r message=FALSE, warning= FALSE}
 
 
-## 1) read data into R
 
-
-###load packages
 library(caret)
 library(ROCR)
 library(XLConnect)
@@ -38,12 +34,9 @@ library(pscl)
 library(penalizedSVM)
 
 ```
-
-
-```{r}
-
 ###  read all the supplier attribute into R and assign them with variables
 
+```{r}
 
 delivery_ps_PN <- read_excel("supplier attribute data.xlsx", sheet = 1)
 
@@ -60,6 +53,7 @@ trust <- read_excel("supplier attribute data.xlsx", sheet = 6)
 competiv <- read_excel("supplier attribute data.xlsx", sheet = 7)
 
 ```
+
 ## 2)  clean the data loaded and exploratory data analysis
 
 ```{r}
@@ -145,7 +139,8 @@ ggplot(competiv_by_year, aes(year, total_added_turnover_year)) +
 # put competitive info(info regarding the new business added) into normalized against supplier's total turnover in USD. I did not normalize it to 0 mean and 1 sd because I think it is meaningful to show that the 0 means there was no new business added. 
 
 delivery_data <- delivery_data %>% 
-  mutate_at(c('ps_qty_norm', 'ps_pn_norm'), funs(scale(.) %>% as.vector))### now normalize ps_qty_norm and ps_pn_norm so that their mean = 0 and standard deviation = 1
+  mutate_at(c('ps_qty_norm', 'ps_pn_norm'), funs(scale(.) %>% as.vector))
+# now normalize ps_qty_norm and ps_pn_norm so that their mean = 0 and standard deviation = 1
 
 competiv_summary <- competiv_nona %>% 
   group_by(supplier) %>% 
@@ -223,12 +218,10 @@ financial$credit_score <- str_replace(financial$credit_score,"^[a-zA-Z]*$","0") 
   factor(levels = c("0","1"))
 ```
 
+##  3) join all the data to tables and remove unecessary variables
 ```{r}
 
-##  3) join all the data to tables and remove unecessary variables 
-
-
-
+ 
 ##join all the tables together
 
 
@@ -290,9 +283,10 @@ supplier_data_n <- dplyr::select(supplier_data, c(1:8))  #one with only the nume
 supplier_data_f <- dplyr::select(supplier_data, c(1,3,9:14))   #supplier data with only categorical version of the variables
 ```
 
-```{r fig.width = 6, fig.height=4, echo = FALSE}
+## 4) do some more exploratory analysis with reduced data in one table.I want to create a plot of the relationships within all of the variables and faceted by strategic.
 
-# 4) do some more exploratory analysis with reduced data in one table.I want to create a plot of the relationships within all of the variables and faceted by strategic.
+
+```{r fig.width = 6, fig.height=4, echo = FALSE}
 # plot every single variables in supplier data
 
 par(mfrow=c(2,3))
@@ -362,7 +356,7 @@ pairs(variables_n)
 
 
 
-###plotting the correlation and p value for the correlation
+# plotting the correlation and p value for the correlation
 
 panel.cor <- function(x, y, digits = 2, cex.cor, ...)
 {
@@ -389,19 +383,17 @@ pairs(variables_n, upper.panel = panel.cor)
 
 ```
 
-
+## 5) study statistical models : try applying logistics regression first.
 
 ```{r warning = FALSE, message=FALSE}
 
-
-# 5) study statistical models : try applying logistics regression first.
-
-
+# set the seed to make the partition reproductible and test train split
 summary(supplier_data)
+
 smp_size <- floor(0.75 * nrow(supplier_data))
 
-# set the seed to make the partition reproductible and test train split
 set.seed(123)
+
 train_ind <- sample(seq_len(nrow(supplier_data)), size = smp_size)
 
 train_corr <- variables_n[train_ind, ]
@@ -432,15 +424,16 @@ pairs(train_corr, upper.panel = panel.cor)
 
 # run logistic regression with all variables 
 
-model_2 <- glm(strategic ~ turnover_ratio + quality_score + total_added_turnover_n + turnover_ratio_f + quality_score_f,family=binomial(link='logit'),data=train)
+model_2 <- glm(strategic ~ turnover_ratio + quality_score + total_added_turnover_n + turnover_ratio_f +
+                 quality_score_f,family=binomial(link='logit'),data=train)
+
 print(summary(model_2))
+
 print(anova(model_2))
 
 
-
-
-
 # best logistic regression for all supplier _data using AIC score.
+
 bestglm_aic <- function(df) {
   df <- within(df,{
     y <- strategic
